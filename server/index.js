@@ -1,5 +1,5 @@
 require('dotenv').config();
-const express=require('express'),http=require('http'),path=require('path'),cors=require('cors'),helmet=require('helmet'),rateLimit=require('express-rate-limit');
+const express=require('express'),http=require('http'),cors=require('cors'),helmet=require('helmet'),rateLimit=require('express-rate-limit'),crypto=require('crypto');
 const {Server}=require('socket.io'); const {query,pool}=require('./db'); const {sign,hash,compare,requireAuth,requireRole}=require('./auth'); const {Resend}=require('resend');
 const app=express(),server=http.createServer(app);
 const APP_URL=process.env.APP_URL||'https://dexillionzglobal.com'; const allowedOrigins=(process.env.CORS_ORIGIN||APP_URL+',https://dexillionzglobalmarketplace.onrender.com').split(',').map(x=>x.trim()).filter(Boolean); const corsOrigin=(origin,cb)=>{if(!origin||allowedOrigins.includes('*')||allowedOrigins.includes(origin))return cb(null,true); cb(new Error('CORS origin not allowed'))}; const io=new Server(server,{cors:{origin:corsOrigin}}); const resend=process.env.RESEND_API_KEY?new Resend(process.env.RESEND_API_KEY):null;
@@ -25,6 +25,35 @@ async function releaseEligibleOrder(orderId,actorId){
 app.get('/api/health',(req,res)=>res.json({ok:true,service:'dexillionz-api',payment_system:'dexillionz-secure-payments',time:new Date().toISOString()}));
 app.post('/api/auth/register',asyncRoute(async(req,res)=>{const {name,email,password}=req.body;if(!name||!email||!password||password.length<8)return res.status(400).json({error:'Name, valid email and password (8+ chars) required'});const exists=await query('select id from users where lower(email)=lower($1)',[email]);if(exists.rowCount)return res.status(409).json({error:'Email already registered'});const u=(await query('insert into users(name,email,password_hash) values($1,$2,$3) returning id,name,email,role',[name.trim(),email.toLowerCase(),await hash(password)])).rows[0];res.status(201).json({user:u,token:sign(u)})}));
 app.post('/api/auth/login',asyncRoute(async(req,res)=>{const {email,password}=req.body;const r=await query('select * from users where lower(email)=lower($1)',[email]);if(!r.rowCount||!(await compare(password,r.rows[0].password_hash)))return res.status(401).json({error:'Invalid email or password'});const u=r.rows[0];res.json({user:{id:u.id,name:u.name,email:u.email,role:u.role},token:sign(u)})}));
+const forgotRateLimit=rateLimit({windowMs:15*60*1000,max:10,standardHeaders:true,legacyHeaders:false});
+app.post('/api/auth/forgot-password',forgotRateLimit,asyncRoute(async(req,res)=>{
+ const email=String(req.body?.email||'').trim().toLowerCase();
+ const generic={message:'If an account exists for that email, a password reset link has been sent.'};
+ if(!email)return res.status(400).json({error:'Valid email required'});
+ const r=await query("select id,name,email from users where lower(email)=lower($1) and status='active'",[email]);
+ if(!r.rowCount)return res.json(generic);
+ if(!resend)return res.status(503).json({error:'Password reset email is not configured yet. Set RESEND_API_KEY and EMAIL_FROM in Render, then try again.'});
+ const user=r.rows[0];
+ const raw=crypto.randomBytes(32).toString('hex');
+ const tokenHash=crypto.createHash('sha256').update(raw).digest('hex');
+ await query('delete from password_reset_tokens where user_id=$1 or expires_at < now()',[user.id]);
+ await query("insert into password_reset_tokens(user_id,token_hash,expires_at) values($1,$2,now()+interval '1 hour')",[user.id,tokenHash]);
+ const resetUrl=(process.env.APP_URL||'').replace(/\/$/,'')+'/?reset_token='+encodeURIComponent(raw);
+ await resend.emails.send({from:process.env.EMAIL_FROM,to:user.email,subject:'Reset your Dexillionz password',html:`<div style="font-family:Arial,sans-serif;line-height:1.6;max-width:620px;margin:auto"><h2>Reset your Dexillionz password</h2><p>Hello ${String(user.name||'there').replace(/[&<>"']/g,m=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'})[m])},</p><p>We received a request to reset your password. This link expires in 1 hour and can only be used once.</p><p><a href="${resetUrl}" style="display:inline-block;padding:12px 18px;background:#111;color:#fff;text-decoration:none;border-radius:8px">RESET PASSWORD</a></p><p>If you did not request this, you can safely ignore this email.</p></div>`});
+ res.json(generic);
+}));
+app.post('/api/auth/reset-password',asyncRoute(async(req,res)=>{
+ const token=String(req.body?.token||'').trim(); const password=String(req.body?.password||'');
+ if(!/^[a-f0-9]{64}$/i.test(token)||password.length<8)return res.status(400).json({error:'Valid reset token and password (8+ chars) required'});
+ const tokenHash=crypto.createHash('sha256').update(token).digest('hex');
+ const r=await query('select id,user_id from password_reset_tokens where token_hash=$1 and used_at is null and expires_at>now()',[tokenHash]);
+ if(!r.rowCount)return res.status(400).json({error:'This reset link is invalid or has expired. Please request a new one.'});
+ const client=await pool.connect();
+ try{await client.query('begin'); await client.query('update users set password_hash=$1 where id=$2',[await hash(password),r.rows[0].user_id]); await client.query('update password_reset_tokens set used_at=now() where id=$1',[r.rows[0].id]); await client.query('delete from password_reset_tokens where user_id=$1 and id<>$2',[r.rows[0].user_id,r.rows[0].id]); await client.query('commit');}
+ catch(e){await client.query('rollback');throw e} finally{client.release()}
+ res.json({message:'Password reset successful. You can now sign in with your new password.'});
+}));
+
 app.get('/api/me',requireAuth,asyncRoute(async(req,res)=>res.json((await query('select id,name,email,role,status,email_verified from users where id=$1',[req.user.sub])).rows[0])));
 app.get('/api/products',asyncRoute(async(req,res)=>{const {q,category}=req.query;const vals=[];let where='p.active=true';if(category){vals.push(category);where+=' and p.category=$'+vals.length}if(q){vals.push('%'+q+'%');where+=' and (p.name ilike $'+vals.length+' or p.description ilike $'+vals.length+')'}const r=await query(`select p.*,s.business_name seller,coalesce(round(avg(rv.rating),1),0) rating,count(rv.id)::int reviews from products p join sellers s on s.id=p.seller_id left join reviews rv on rv.product_id=p.id where ${where} group by p.id,s.business_name order by p.created_at desc`,vals);res.json(r.rows)}));
 app.get('/api/products/:id',asyncRoute(async(req,res)=>{const p=await query(`select p.*,s.business_name seller,coalesce(round(avg(rv.rating),1),0) rating,count(rv.id)::int reviews from products p join sellers s on s.id=p.seller_id left join reviews rv on rv.product_id=p.id where p.id=$1 group by p.id,s.business_name`,[req.params.id]);if(!p.rowCount)return res.status(404).json({error:'Product not found'});const rv=await query('select r.id,r.rating,r.body,r.created_at,u.name from reviews r join users u on u.id=r.buyer_id where r.product_id=$1 order by r.created_at desc',[req.params.id]);res.json({...p.rows[0],reviews:rv.rows})}));
@@ -62,12 +91,5 @@ app.patch('/api/admin/sellers/:id',requireAuth,requireRole('admin'),asyncRoute(a
 app.post('/api/admin/broadcasts',requireAuth,requireRole('admin'),asyncRoute(async(req,res)=>{const {audience,subject,body}=req.body;let where='1=1';if(audience==='buyers')where="role='buyer'";if(audience==='sellers')where="role='seller'";const users=(await query(`select email,name from users where ${where}`)).rows;const b=(await query('insert into broadcasts(admin_id,audience,subject,body,recipient_count,status) values($1,$2,$3,$4,$5,$6) returning *',[req.user.sub,audience,subject,body,users.length,resend?'sending':'needs_email_provider'])).rows[0];if(resend){for(const u of users)await resend.emails.send({from:process.env.EMAIL_FROM,to:u.email,subject,html:`<div style="font-family:Arial"><h2>${subject}</h2><p>${String(body).replace(/\n/g,'<br>')}</p></div>`});await query("update broadcasts set status='sent' where id=$1",[b.id])}res.status(201).json(b)}));
 app.get('/api/admin/stats',requireAuth,requireRole('admin'),asyncRoute(async(req,res)=>{const r=await query(`select (select count(*) from users) users,(select count(*) from sellers) sellers,(select count(*) from products where active) products,(select count(*) from orders) orders,(select coalesce(sum(total),0) from orders where payment_status='paid') gmv,(select count(*) from disputes where status!='resolved') open_disputes`);res.json(r.rows[0])}));
 io.on('connection',socket=>socket.on('join_conversation',id=>socket.join(id)));
-const FRONTEND_DIR=path.resolve(__dirname,'..');
-app.use(express.static(FRONTEND_DIR,{index:'index.html'}));
-app.get('*',(req,res,next)=>{
-  res.sendFile('index.html',{root:FRONTEND_DIR},err=>{
-    if(err){console.error('Frontend file error:',err);return next(err)}
-  });
-});
-app.use((err,req,res,next)=>{console.error('Unhandled server error:',err);res.status(500).json({error:'Internal server error'})});
+app.use(express.static(__dirname+'/..')); app.get('*',(req,res)=>res.sendFile(__dirname+'/../index.html')); app.use((err,req,res,next)=>{console.error(err);res.status(500).json({error:'Internal server error'})});
 const PORT=Number(process.env.PORT||8080),HOST=process.env.HOST||'0.0.0.0'; server.listen(PORT,HOST,()=>console.log(`Dexillionz API listening on ${HOST}:${PORT}`));

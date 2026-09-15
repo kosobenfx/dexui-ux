@@ -65,21 +65,20 @@ Never commit `.env`, `.env.production`, database passwords or email API keys to 
 - The frontend is resilient to `/api/products` failures: it renders the marketplace shell and shows a retry message instead of a blank page.
 - The protected-payment workflow is a software workflow/ledger until a properly regulated banking/payment/escrow settlement provider is connected.
 
-## Render + Supabase deployment
+## Password reset
 
-This repository is structured with the application files at the repository root so it can be connected directly to a Render Web Service.
+This build includes a secure email password-reset flow for buyers, sellers, and admins.
 
-1. Create/open your Supabase project and click **Connect**.
-2. Copy a PostgreSQL connection string suitable for an application server (the Supabase **Session pooler** connection is a good choice for Render).
-3. In Render, open the service's **Environment** page and add:
-   - `DATABASE_URL` = your complete Supabase PostgreSQL connection string
-   - `JWT_SECRET` = a long random secret
-   - `ADMIN_BOOTSTRAP_PASSWORD` = a strong temporary admin bootstrap password
-   - `APP_URL` = your Render service URL
-   - `CORS_ORIGIN` = your frontend/origin URL
-4. Save and deploy. Render supports environment variables for secret values; do not commit the database password or other secrets to Git.
-5. The `prestart` script runs `server/migrate.js`, which creates the application schema when the service starts.
+### Render environment variables
 
-### Important
+Set these in the Render service before using password reset:
 
-Never put the real Supabase password into `.env.example`, `render.yaml`, GitHub, or this ZIP. The `DATABASE_URL` entry in `render.yaml` is intentionally `sync: false` so Render asks you to supply the secret in the dashboard.
+- `APP_URL` = your live Render URL, for example `https://dexillionzglobalmarketplace.onrender.com`
+- `CORS_ORIGIN` = the same live URL
+- `JWT_SECRET` = a long random secret (do not reuse the database password)
+- `RESEND_API_KEY` = your Resend API key
+- `EMAIL_FROM` = a sender address/domain verified in Resend, for example `Dexillionz Global <no-reply@your-verified-domain.com>`
+
+The reset link is valid for 1 hour and can be used only once. Reset tokens are stored as SHA-256 hashes in PostgreSQL, not as plaintext tokens.
+
+After deployment, the database migration automatically creates the `password_reset_tokens` table because the normal `prestart` migration runs before the server starts.
