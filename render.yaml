@@ -2,21 +2,23 @@ services:
   - type: web
     name: dexillionz-global-marketplace
     runtime: node
+    plan: free
     buildCommand: npm install
     startCommand: npm start
     healthCheckPath: /api/health
     envVars:
       - key: NODE_ENV
         value: production
-      - key: PORT
-        value: 10000
       - key: HOST
         value: 0.0.0.0
+      - key: PORT
+        value: 10000
+      # Supabase connection string. Add the real value in Render → Environment.
+      - key: DATABASE_URL
+        sync: false
       - key: APP_URL
         sync: false
       - key: CORS_ORIGIN
-        sync: false
-      - key: DATABASE_URL
         sync: false
       - key: JWT_SECRET
         sync: false
