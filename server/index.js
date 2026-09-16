@@ -2323,8 +2323,36 @@ server.listen(
  await query('delete from password_reset_tokens where user_id=$1 or expires_at < now()',[user.id]);
  await query("insert into password_reset_tokens(user_id,token_hash,expires_at) values($1,$2,now()+interval '1 hour')",[user.id,tokenHash]);
  const resetUrl=(process.env.APP_URL||'').replace(/\/$/,'')+'/?reset_token='+encodeURIComponent(raw);
- await resend.emails.send({from:process.env.EMAIL_FROM,to:user.email,subject:'Reset your Dexillionz password',html:`<div style="font-family:Arial,sans-serif;line-height:1.6;max-width:620px;margin:auto"><h2>Reset your Dexillionz password</h2><p>Hello ${String(user.name||'there').replace(/[&<>"']/g,m=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'})[m])},</p><p>We received a request to reset your password. This link expires in 1 hour and can only be used once.</p><p><a href="${resetUrl}" style="display:inline-block;padding:12px 18px;background:#111;color:#fff;text-decoration:none;border-radius:8px">RESET PASSWORD</a></p><p>If you did not request this, you can safely ignore this email.</p></div>`});
- res.json(generic);
+await resend.emails.send({
+  from: process.env.EMAIL_FROM,
+  to: user.email,
+  subject: 'Reset your Dexillionz password',
+  html: `
+    <div style="font-family:Arial,sans-serif;line-height:1.6;max-width:620px;margin:auto">
+      <h2>Reset your Dexillionz password</h2>
+      <p>Hello ${String(user.name || 'there').replace(
+        /[&<>"']/g,
+        m => ({
+          '&': '&amp;',
+          '<': '&lt;',
+          '>': '&gt;',
+          '"': '&quot;',
+          "'": '&#39;'
+        })[m]
+      )},</p>
+      <p>We received a request to reset your password. This link expires in 1 hour and can only be used once.</p>
+      <p>
+        <a
+          href="${resetUrl}"
+          style="display:inline-block;padding:12px 18px;background:#111;color:#fff;text-decoration:none;border-radius:8px"
+        >
+          RESET PASSWORD
+        </a>
+      </p>
+      <p>If you did not request this, you can safely ignore this email.</p>
+    </div>
+  `
+}); res.json(generic);
 }));
 app.post('/api/auth/reset-password',asyncRoute(async(req,res)=>{
  const token=String(req.body?.token||'').trim(); const password=String(req.body?.password||'');
