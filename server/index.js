@@ -95,6 +95,13 @@ app.use(express.static(__dirname+'/..')); app.get('*',(req,res)=>res.sendFile(__
 const PORT=Number(process.env.PORT||8080),HOST=process.env.HOST||'0.0.0.0'; server.listen(PORT,HOST,()=>console.log(`Dexillionz API listening on ${HOST}:${PORT}`));
 
 
+// all your API routes above this point
+
+
+io.on('connection', socket => {
+  socket.on('join_conversation', id => socket.join(id));
+});
+
 const FRONTEND_DIR = path.resolve(__dirname, '..');
 
 app.use(express.static(FRONTEND_DIR, {
@@ -102,7 +109,26 @@ app.use(express.static(FRONTEND_DIR, {
 }));
 
 app.get('*', (req, res, next) => {
-  res.sendFile(path.join(FRONTEND_DIR, 'index.html'), (err) => {
+  if (req.path.startsWith('/api/')) {
+    return next();
+  }
+
+  res.sendFile(path.join(FRONTEND_DIR, 'index.html'), err => {
     if (err) next(err);
   });
+});
+
+app.use((err, req, res, next) => {
+  console.error('Unhandled server error:', err);
+  const status = Number(err.statusCode) || 500;
+  res.status(status).json({
+    error: status >= 500 ? 'Internal server error' : (err.message || 'Request failed')
+  });
+});
+
+const PORT = Number(process.env.PORT || 8080);
+const HOST = process.env.HOST || '0.0.0.0';
+
+server.listen(PORT, HOST, () => {
+  console.log(Dexillionz API listening on ${HOST}:${PORT});
 });
