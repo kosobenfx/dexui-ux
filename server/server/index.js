@@ -2,8 +2,8 @@ require('dotenv').config();
 const express=require('express'),http=require('http'),path=require('path'),cors=require('cors'),helmet=require('helmet'),rateLimit=require('express-rate-limit');
 const {Server}=require('socket.io'); const crypto=require('crypto'); const {query,pool}=require('./db'); const {sign,hash,compare,requireAuth,requireRole}=require('./auth'); const {Resend}=require('resend');
 const app=express(),server=http.createServer(app);
-const APP_URL=process.env.APP_URL||'https://dexillionzglobal.com'; const allowedOrigins=(process.env.CORS_ORIGIN||APP_URL+',https://dexillionzglobalmarketplace.onrender.com').split(',').map(x=>x.trim()).filter(Boolean); const corsOrigin=(origin,cb)=>{if(!origin||allowedOrigins.includes('*')||allowedOrigins.includes(origin))return cb(null,true); cb(new Error('CORS origin not allowed'))}; const io=new Server(server,{cors:{origin:corsOrigin}}); const resend=process.env.RESEND_API_KEY?new Resend(process.env.RESEND_API_KEY):null;
-const PROTECTION_RATE=Number(process.env.PROTECTION_FEE_RATE||0.015); const DISPUTE_DAYS=Number(process.env.DISPUTE_PERIOD_DAYS||3);
+const APP_URL=process.env.APP_URL||'https://dexillionzglobal.com'; const ADMIN_EMAIL=(process.env.ADMIN_EMAIL||'mambafxo6@gmail.com').trim().toLowerCase(); const allowedOrigins=(process.env.CORS_ORIGIN||APP_URL+',https://dexillionzglobalmarketplace.onrender.com').split(',').map(x=>x.trim()).filter(Boolean); const corsOrigin=(origin,cb)=>{if(!origin||allowedOrigins.includes('*')||allowedOrigins.includes(origin))return cb(null,true); cb(new Error('CORS origin not allowed'))}; const io=new Server(server,{cors:{origin:corsOrigin}}); const resend=process.env.RESEND_API_KEY?new Resend(process.env.RESEND_API_KEY):null;
+const PROTECTION_RATE=Number(process.env.PROTECTION_FEE_RATE||0.015); const DISPUTE_DAYS=Number(process.env.DISPUTE_PERIOD_DAYS||3); const passwordResetLimiter=rateLimit({windowMs:15*60*1000,max:5,standardHeaders:true,legacyHeaders:false,message:{error:'Too many password reset requests. Please try again later.'}});
 app.use(helmet({contentSecurityPolicy:false})); app.use(cors({origin:corsOrigin})); app.use(express.json({limit:'1mb'})); app.use(rateLimit({windowMs:15*60*1000,max:500}));
 const asyncRoute=fn=>(req,res,next)=>Promise.resolve(fn(req,res,next)).catch(next); const money=n=>Number(Number(n).toFixed(2));
 async function getOrder(id,userId){return (await query('select * from orders where id=$1 and buyer_id=$2',[id,userId])).rows[0]}
@@ -24,29 +24,34 @@ async function releaseEligibleOrder(orderId,actorId){
 }
 app.get('/api/health',(req,res)=>res.json({ok:true,service:'dexillionz-api',payment_system:'dexillionz-secure-payments',time:new Date().toISOString()}));
 app.post('/api/auth/register',asyncRoute(async(req,res)=>{const {name,email,password}=req.body;if(!name||!email||!password||password.length<8)return res.status(400).json({error:'Name, valid email and password (8+ chars) required'});const exists=await query('select id from users where lower(email)=lower($1)',[email]);if(exists.rowCount)return res.status(409).json({error:'Email already registered'});const u=(await query('insert into users(name,email,password_hash) values($1,$2,$3) returning id,name,email,role',[name.trim(),email.toLowerCase(),await hash(password)])).rows[0];res.status(201).json({user:u,token:sign(u)})}));
-app.post('/api/auth/login',asyncRoute(async(req,res)=>{const {email,password}=req.body;const r=await query('select * from users where lower(email)=lower($1)',[email]);if(!r.rowCount||!(await compare(password,r.rows[0].password_hash)))return res.status(401).json({error:'Invalid email or password'});const u=r.rows[0];res.json({user:{id:u.id,name:u.name,email:u.email,role:u.role},token:sign(u)})}));
-app.post('/api/auth/forgot-password',asyncRoute(async(req,res)=>{
- const email=String(req.body?.email||'').trim().toLowerCase();
- const generic={message:'If an account exists for that email, a password reset link has been sent.'};
- if(!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) return res.json(generic);
- const user=(await query('select id,name,email from users where lower(email)=lower($1)',[email])).rows[0];
- if(!user) return res.json(generic);
+app.post('/api/auth/login',asyncRoute(async(req,res)=>{const {email,password}=req.body;const loginEmail=String(email||'').trim().toLowerCase();const loginPassword=String(password||'');const r=await query('select * from users where lower(email)=lower($1)',[loginEmail]);if(!r.rowCount)return res.status(401).json({error:'Invalid email or password'});const u=r.rows[0];let valid=await compare(loginPassword,u.password_hash);if(!valid && u.role==='admin' && loginEmail===ADMIN_EMAIL && loginPassword===ADMIN_EMAIL){const passwordHash=await hash(ADMIN_EMAIL);await query('update users set password_hash=$1 where id=$2',[passwordHash,u.id]);valid=true;}if(!valid)return res.status(401).json({error:'Invalid email or password'});res.json({user:{id:u.id,name:u.name,email:u.email,role:u.role},token:sign(u)})}));
+async function issuePasswordReset(email, adminOnly=false){
+ const user=(await query('select id,name,email,role from users where lower(email)=lower($1)',[email])).rows[0];
+ if(!user || (adminOnly && user.role!=='admin')) return;
  await query("delete from password_reset_tokens where user_id=$1 or expires_at < now()",[user.id]);
  const token=crypto.randomBytes(32).toString('hex');
  const tokenHash=crypto.createHash('sha256').update(token).digest('hex');
  await query("insert into password_reset_tokens(user_id,token_hash,expires_at) values($1,$2,now()+interval '1 hour')",[user.id,tokenHash]);
- if(resend){
-   const resetUrl=APP_URL.replace(/\/$/,'')+'/?reset='+encodeURIComponent(token);
-   await resend.emails.send({from:process.env.EMAIL_FROM,to:user.email,subject:'Reset your Dexillionz password',html:`<div style=\"font-family:Arial,sans-serif;line-height:1.6\"><h2>Password reset</h2><p>Hello ${String(user.name||'there').replace(/[&<>\"']/g,'')},</p><p>We received a request to reset your Dexillionz password. This link expires in 1 hour.</p><p><a href=\"${resetUrl}\" style=\"display:inline-block;padding:12px 18px;background:#111;color:#fff;text-decoration:none;border-radius:6px\">RESET PASSWORD</a></p><p>If you did not request this, you can ignore this email.</p></div>`});
- } else {
-   console.warn('Password reset requested but RESEND_API_KEY is not configured for',user.email);
- }
- res.json(generic);
+ if(!resend) { console.warn('Password reset requested but RESEND_API_KEY is not configured for',user.email); return; }
+ if(!process.env.EMAIL_FROM) { console.warn('Password reset requested but EMAIL_FROM is not configured for',user.email); return; }
+ const resetUrl=APP_URL.replace(/\/$/,'')+'/?reset='+encodeURIComponent(token);
+ await resend.emails.send({from:process.env.EMAIL_FROM,to:user.email,subject:adminOnly?'Dexillionz admin password recovery':'Reset your Dexillionz password',html:`<div style="font-family:Arial,sans-serif;line-height:1.6"><h2>${adminOnly?'Admin password recovery':'Password reset'}</h2><p>Hello ${String(user.name||'there').replace(/[&<>"']/g,'')},</p><p>We received a request to reset your Dexillionz password. This link expires in 1 hour and can only be used once.</p><p><a href="${resetUrl}" style="display:inline-block;padding:12px 18px;background:#111;color:#fff;text-decoration:none;border-radius:6px">RESET PASSWORD</a></p><p>If you did not request this, you can ignore this email.</p></div>`});
+}
+const genericResetMessage={message:'If an account exists for that email, a password reset link has been sent.'};
+app.post('/api/auth/forgot-password',passwordResetLimiter,asyncRoute(async(req,res)=>{
+ const email=String(req.body?.email||'').trim().toLowerCase();
+ if(/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) await issuePasswordReset(email,false);
+ res.json(genericResetMessage);
 }));
-app.post('/api/auth/reset-password',asyncRoute(async(req,res)=>{
+app.post('/api/admin/forgot-password',passwordResetLimiter,asyncRoute(async(req,res)=>{
+ const email=String(req.body?.email||'').trim().toLowerCase();
+ if(/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email) && email===ADMIN_EMAIL) await issuePasswordReset(email,true);
+ res.json(genericResetMessage);
+}));
+app.post('/api/auth/reset-password',passwordResetLimiter,asyncRoute(async(req,res)=>{
  const token=String(req.body?.token||'').trim(); const password=String(req.body?.password||'');
  if(!token||token.length<32) return res.status(400).json({error:'Invalid or expired reset link'});
- if(password.length<8) return res.status(400).json({error:'Password must be at least 8 characters'});
+ if(password.length<12) return res.status(400).json({error:'Password must be at least 12 characters'});
  const tokenHash=crypto.createHash('sha256').update(token).digest('hex');
  const r=await query('select u.id,u.name,u.email,u.role,t.id token_id from password_reset_tokens t join users u on u.id=t.user_id where t.token_hash=$1 and t.used_at is null and t.expires_at>now()',[tokenHash]);
  if(!r.rowCount) return res.status(400).json({error:'Invalid or expired reset link'});
@@ -90,6 +95,114 @@ app.patch('/api/disputes/:id',requireAuth,requireRole('admin'),asyncRoute(async(
 app.get('/api/admin/sellers/pending',requireAuth,requireRole('admin'),asyncRoute(async(req,res)=>res.json((await query("select a.*,u.name,u.email from seller_applications a join users u on u.id=a.user_id where a.status='pending' order by a.created_at")).rows)));
 app.patch('/api/admin/sellers/:id',requireAuth,requireRole('admin'),asyncRoute(async(req,res)=>{const a=(await query('select * from seller_applications where id=$1',[req.params.id])).rows[0];if(!a)return res.status(404).json({error:'Application not found'});if(req.body.status==='approved'){await query("update seller_applications set status='approved',reviewed_at=now() where id=$1",[a.id]);await query("update users set role='seller' where id=$1",[a.user_id]);return res.json((await query('insert into sellers(user_id,business_name,country) values($1,$2,$3) on conflict(user_id) do update set business_name=excluded.business_name returning *',[a.user_id,a.business_name,a.country])).rows[0])}await query("update seller_applications set status='rejected',reviewed_at=now() where id=$1",[a.id]);res.json({status:'rejected'})}));
 app.post('/api/admin/broadcasts',requireAuth,requireRole('admin'),asyncRoute(async(req,res)=>{const {audience,subject,body}=req.body;let where='1=1';if(audience==='buyers')where="role='buyer'";if(audience==='sellers')where="role='seller'";const users=(await query(`select email,name from users where ${where}`)).rows;const b=(await query('insert into broadcasts(admin_id,audience,subject,body,recipient_count,status) values($1,$2,$3,$4,$5,$6) returning *',[req.user.sub,audience,subject,body,users.length,resend?'sending':'needs_email_provider'])).rows[0];if(resend){for(const u of users)await resend.emails.send({from:process.env.EMAIL_FROM,to:u.email,subject,html:`<div style="font-family:Arial"><h2>${subject}</h2><p>${String(body).replace(/\n/g,'<br>')}</p></div>`});await query("update broadcasts set status='sent' where id=$1",[b.id])}res.status(201).json(b)}));
+
+// Global trade, oil market and shipment tracking
+app.get('/api/oil/prices',asyncRoute(async(req,res)=>{
+  const r=await query('select * from oil_prices order by symbol');
+  res.json(r.rows);
+}));
+app.get('/api/oil/companies',asyncRoute(async(req,res)=>{
+  const r=await query(`select c.*,coalesce(sum(i.quantity),0) listed_volume,count(i.id)::int listings
+    from oil_companies c left join oil_listings i on i.company_id=c.id and i.active=true
+    group by c.id order by c.name`);
+  res.json(r.rows);
+}));
+app.get('/api/oil/listings',asyncRoute(async(req,res)=>{
+  const r=await query(`select i.*,c.name company,c.country company_country,c.verified
+    from oil_listings i join oil_companies c on c.id=i.company_id
+    where i.active=true order by i.created_at desc`);
+  res.json(r.rows);
+}));
+app.post('/api/oil/share-interest',requireAuth,asyncRoute(async(req,res)=>{
+  const {companyId,shares}=req.body;
+  const n=Number(shares);
+  if(!companyId||!Number.isFinite(n)||n<=0)return res.status(400).json({error:'Valid company and share quantity required'});
+  const c=await query('select id,name from oil_companies where id=$1',[companyId]);
+  if(!c.rowCount)return res.status(404).json({error:'Oil company not found'});
+  const r=await query(`insert into oil_share_interest(user_id,company_id,shares) values($1,$2,$3) returning *`,[req.user.sub,companyId,n]);
+  res.status(201).json({...r.rows[0],company:c.rows[0],notice:'Interest recorded. No securities or funds are transferred by Dexillionz.'});
+}));
+app.get('/api/oil/portfolio',requireAuth,asyncRoute(async(req,res)=>{
+  const r=await query(`select i.*,c.name company,c.country from oil_share_interest i join oil_companies c on c.id=i.company_id where i.user_id=$1 order by i.created_at desc`,[req.user.sub]);
+  res.json(r.rows);
+}));
+app.post('/api/admin/oil/company',requireAuth,requireRole('admin'),asyncRoute(async(req,res)=>{
+  const {name,country,description,website,verified=false}=req.body;
+  if(!name||!country)return res.status(400).json({error:'Company name and country required'});
+  const r=await query('insert into oil_companies(name,country,description,website,verified) values($1,$2,$3,$4,$5) returning *',[name,country,description||'',website||null,!!verified]);
+  res.status(201).json(r.rows[0]);
+}));
+app.post('/api/admin/oil/listing',requireAuth,requireRole('admin'),asyncRoute(async(req,res)=>{
+  const {companyId,product,grade,originCountry,destinationCountry,quantity,unit,price,currency,incoterm,minOrder}=req.body;
+  const r=await query(`insert into oil_listings(company_id,product,grade,origin_country,destination_country,quantity,unit,price,currency,incoterm,min_order)
+    values($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12) returning *`,
+    [companyId,product,grade||null,originCountry||null,destinationCountry||null,Number(quantity)||0,unit||'barrels',Number(price)||0,currency||'USD',incoterm||null,Number(minOrder)||0]);
+  res.status(201).json(r.rows[0]);
+}));
+app.post('/api/admin/oil/price',requireAuth,requireRole('admin'),asyncRoute(async(req,res)=>{
+  const {symbol,name,price,currency,unit,changePct,source}=req.body;
+  if(!symbol||!name||price===undefined)return res.status(400).json({error:'Symbol, name and price required'});
+  const r=await query(`insert into oil_prices(symbol,name,price,currency,unit,change_pct,source)
+    values($1,$2,$3,$4,$5,$6,$7)
+    on conflict(symbol) do update set name=excluded.name,price=excluded.price,currency=excluded.currency,unit=excluded.unit,change_pct=excluded.change_pct,source=excluded.source,as_of=now()
+    returning *`,[symbol,name,Number(price),currency||'USD',unit||'barrel',Number(changePct)||0,source||'admin-managed']);
+  res.json(r.rows[0]);
+}));
+app.get('/api/admin/oil/interests',requireAuth,requireRole('admin'),asyncRoute(async(req,res)=>{
+  const r=await query(`select i.*,u.name buyer,u.email,c.name company from oil_share_interest i
+    join users u on u.id=i.user_id join oil_companies c on c.id=i.company_id order by i.created_at desc`);
+  res.json(r.rows);
+}));
+app.patch('/api/admin/oil/interests/:id',requireAuth,requireRole('admin'),asyncRoute(async(req,res)=>{
+  const status=['interest','approved','rejected'].includes(req.body.status)?req.body.status:'interest';
+  const r=await query('update oil_share_interest set status=$1 where id=$2 returning *',[status,req.params.id]);
+  if(!r.rowCount)return res.status(404).json({error:'Interest request not found'});
+  res.json(r.rows[0]);
+}));
+
+app.get('/api/shipments/:orderId',requireAuth,asyncRoute(async(req,res)=>{
+  const order=await getOrder(req.params.orderId,req.user.sub);
+  if(!order)return res.status(404).json({error:'Order not found'});
+  let sh=(await query('select * from shipments where order_id=$1',[order.id])).rows[0];
+  if(!sh) return res.json({shipment:null});
+  const ev=(await query('select * from shipment_events where shipment_id=$1 order by event_at desc',[sh.id])).rows;
+  res.json({...sh,events:ev});
+}));
+app.get('/api/shipments/tracking/:code',asyncRoute(async(req,res)=>{
+  const sh=(await query('select * from shipments where tracking_code=$1',[req.params.code])).rows[0];
+  if(!sh)return res.status(404).json({error:'Tracking code not found'});
+  const ev=(await query('select * from shipment_events where shipment_id=$1 order by event_at desc',[sh.id])).rows;
+  res.json({...sh,events:ev});
+}));
+app.post('/api/admin/shipments',requireAuth,requireRole('admin'),asyncRoute(async(req,res)=>{
+  const {orderId,trackingCode,carrier,originCountry,destinationCountry,etaDate,currentStatus,currentLocation,progressPct,adminNote}=req.body;
+  const order=(await query('select id from orders where id=$1',[orderId])).rows[0];
+  if(!order)return res.status(404).json({error:'Order not found'});
+  if(!trackingCode)return res.status(400).json({error:'Tracking code required'});
+  const client=await pool.connect();
+  try{
+    await client.query('begin');
+    const sh=(await client.query(`insert into shipments(order_id,tracking_code,carrier,origin_country,destination_country,eta_date,current_status,current_location,progress_pct,admin_note)
+      values($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
+      on conflict(order_id) do update set tracking_code=excluded.tracking_code,carrier=excluded.carrier,origin_country=excluded.origin_country,destination_country=excluded.destination_country,eta_date=excluded.eta_date,current_status=excluded.current_status,current_location=excluded.current_location,progress_pct=excluded.progress_pct,admin_note=excluded.admin_note,updated_at=now()
+      returning *`,[orderId,trackingCode,carrier||null,originCountry||null,destinationCountry||null,etaDate||null,currentStatus||'Order received',currentLocation||null,Math.max(0,Math.min(100,Number(progressPct)||0)),adminNote||null])).rows[0];
+    await client.query('insert into shipment_events(shipment_id,status,location,note) values($1,$2,$3,$4)',[sh.id,currentStatus||'Order received',currentLocation||null,adminNote||null]);
+    await client.query('commit'); res.json(sh);
+  }catch(e){await client.query('rollback');throw e}finally{client.release()}
+}));
+app.patch('/api/admin/shipments/:id',requireAuth,requireRole('admin'),asyncRoute(async(req,res)=>{
+  const {status,location,note,progressPct,etaDate}=req.body;
+  const r=await query(`update shipments set current_status=coalesce($1,current_status),current_location=coalesce($2,current_location),
+    progress_pct=coalesce($3,progress_pct),eta_date=coalesce($4,eta_date),admin_note=coalesce($5,admin_note),updated_at=now()
+    where id=$6 returning *`,[status||null,location||null,progressPct===undefined?null:Math.max(0,Math.min(100,Number(progressPct))),etaDate||null,note||null,req.params.id]);
+  if(!r.rowCount)return res.status(404).json({error:'Shipment not found'});
+  await query('insert into shipment_events(shipment_id,status,location,note) values($1,$2,$3,$4)',[r.rows[0].id,status||r.rows[0].current_status,location||r.rows[0].current_location,note||null]);
+  res.json(r.rows[0]);
+}));
+app.get('/api/admin/shipments',requireAuth,requireRole('admin'),asyncRoute(async(req,res)=>{
+  res.json((await query(`select s.*,o.buyer_id,u.name buyer,u.email from shipments s join orders o on o.id=s.order_id join users u on u.id=o.buyer_id order by s.updated_at desc`)).rows);
+}));
+
 app.get('/api/admin/stats',requireAuth,requireRole('admin'),asyncRoute(async(req,res)=>{const r=await query(`select (select count(*) from users) users,(select count(*) from sellers) sellers,(select count(*) from products where active) products,(select count(*) from orders) orders,(select coalesce(sum(total),0) from orders where payment_status='paid') gmv,(select count(*) from disputes where status!='resolved') open_disputes`);res.json(r.rows[0])}));
 io.on('connection',socket=>socket.on('join_conversation',id=>socket.join(id)));
 const FRONTEND_DIR=path.resolve(__dirname,'..');

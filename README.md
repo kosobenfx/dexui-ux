@@ -74,7 +74,7 @@ This repository is structured with the application files at the repository root 
 3. In Render, open the service's **Environment** page and add:
    - `DATABASE_URL` = your complete Supabase PostgreSQL connection string
    - `JWT_SECRET` = a long random secret
-   - `ADMIN_BOOTSTRAP_PASSWORD` = a strong temporary admin bootstrap password
+   - `ADMIN_EMAIL` = the administrator email. The admin password is configured to match this email as requested.
    - `APP_URL` = your Render service URL
    - `CORS_ORIGIN` = your frontend/origin URL
 4. Save and deploy. Render supports environment variables for secret values; do not commit the database password or other secrets to Git.
@@ -97,3 +97,34 @@ For production email delivery on Render, configure:
 - `APP_URL` = the public URL users should return to (for example your Render URL or custom domain)
 
 The database migration automatically creates the `password_reset_tokens` table on startup. Reset tokens are never stored in plaintext. If Resend is not configured, the API deliberately does not expose reset tokens; configure the email provider before relying on password recovery in production.
+
+
+## Admin password recovery
+
+The login page includes **Admin Password Recovery**. It sends a single-use, 1-hour reset link only when the submitted email matches `ADMIN_EMAIL` and belongs to an admin account. Configure `ADMIN_EMAIL`, `RESEND_API_KEY`, and `EMAIL_FROM` in Render. Password resets require at least 12 characters. For this deployment, the administrator password is intentionally the same as `ADMIN_EMAIL`; this is convenient but significantly weaker than using a unique password.
+
+
+## New global trade, energy and logistics modules
+
+This version adds:
+- Multilingual UI switcher: English, Spanish, French, Portuguese, Arabic and Chinese.
+- Oil & Energy Market with oil/refined-product supplier listings, indicative price board and company profiles.
+- Company-to-company and country-to-country trade structure through supplier listings, quotes, destination fields and global shipping workflows.
+- Manual admin shipment tracker with tracking code, carrier, origin/destination, progress %, customer-facing notes, timeline events, ETA and calculated days remaining.
+- Oil-company shareholder-interest workflow. It records a user's requested share quantity for admin/compliance review. It intentionally does **not** transfer money, custody securities, execute trades or represent a regulated brokerage service.
+- Admin-adjustable oil price board. Prices are marked as admin-managed/indicative unless a trusted market-data provider is connected.
+- Chatway widget integration through `CHATWAY_WIDGET_ID`.
+
+### Chatway setup
+
+Chatway requires the site owner to create the Chatway account and widget, then copy the widget ID into Render:
+
+`CHATWAY_WIDGET_ID=your_widget_id`
+
+The website loads Chatway automatically when this variable contains a real widget ID. Chatway's official installation guide says to sign up, create the widget, copy its installation code/ID, and add it to the site. See the official guide: https://chatway.app/help/how-to-install-chatway/how-to-install-chatway-on-any-website
+
+Do not commit Chatway credentials or other secrets to GitHub.
+
+### Regulated finance and oil trading
+
+The oil supplier marketplace is a B2B/B2C trade workflow. The price board is not a promise of live market data. The shareholder-interest module is a request/record workflow, not a securities exchange or broker. Before enabling real securities purchases, share custody, investor funds, or regulated oil/commodity trading, connect licensed/regulated providers and implement KYC/AML, investor disclosures, suitability/eligibility, sanctions screening, settlement, tax and country-specific licensing requirements.

@@ -101,3 +101,59 @@ CREATE INDEX IF NOT EXISTS idx_orders_buyer ON orders(buyer_id,created_at);
 CREATE INDEX IF NOT EXISTS idx_orders_payment ON orders(payment_status,status);
 CREATE INDEX IF NOT EXISTS idx_reviews_product ON reviews(product_id,created_at);
 CREATE INDEX IF NOT EXISTS idx_payment_ledger_order ON payment_ledger(order_id,created_at);
+
+-- Dexillionz Global Trade extensions
+CREATE TABLE IF NOT EXISTS oil_companies(
+ id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+ name text NOT NULL, country text NOT NULL, description text NOT NULL DEFAULT '',
+ website text, verified boolean NOT NULL DEFAULT false,
+ created_at timestamptz NOT NULL DEFAULT now()
+);
+CREATE TABLE IF NOT EXISTS oil_listings(
+ id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+ company_id uuid REFERENCES oil_companies(id) ON DELETE CASCADE,
+ product text NOT NULL, grade text, origin_country text, destination_country text,
+ quantity numeric(18,3) NOT NULL DEFAULT 0, unit text NOT NULL DEFAULT 'barrels',
+ price numeric(18,4) NOT NULL DEFAULT 0, currency char(3) NOT NULL DEFAULT 'USD',
+ incoterm text, min_order numeric(18,3) NOT NULL DEFAULT 0, active boolean NOT NULL DEFAULT true,
+ created_at timestamptz NOT NULL DEFAULT now()
+);
+CREATE TABLE IF NOT EXISTS oil_prices(
+ id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+ symbol text NOT NULL, name text NOT NULL, price numeric(18,4) NOT NULL,
+ currency char(3) NOT NULL DEFAULT 'USD', unit text NOT NULL DEFAULT 'barrel',
+ change_pct numeric(10,4) NOT NULL DEFAULT 0, as_of timestamptz NOT NULL DEFAULT now(),
+ source text NOT NULL DEFAULT 'admin-managed'
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_oil_prices_symbol ON oil_prices(symbol);
+CREATE TABLE IF NOT EXISTS oil_share_interest(
+ id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+ user_id uuid REFERENCES users(id) ON DELETE CASCADE,
+ company_id uuid REFERENCES oil_companies(id) ON DELETE CASCADE,
+ shares numeric(18,4) NOT NULL CHECK(shares>0),
+ status text NOT NULL DEFAULT 'interest' CHECK(status IN('interest','approved','rejected')),
+ created_at timestamptz NOT NULL DEFAULT now()
+);
+CREATE TABLE IF NOT EXISTS shipments(
+ id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+ order_id uuid UNIQUE REFERENCES orders(id) ON DELETE CASCADE,
+ tracking_code text UNIQUE NOT NULL,
+ carrier text,
+ origin_country text,
+ destination_country text,
+ current_status text NOT NULL DEFAULT 'Order received',
+ current_location text,
+ eta_date date,
+ progress_pct integer NOT NULL DEFAULT 0 CHECK(progress_pct BETWEEN 0 AND 100),
+ admin_note text,
+ updated_at timestamptz NOT NULL DEFAULT now(),
+ created_at timestamptz NOT NULL DEFAULT now()
+);
+CREATE TABLE IF NOT EXISTS shipment_events(
+ id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+ shipment_id uuid REFERENCES shipments(id) ON DELETE CASCADE,
+ status text NOT NULL, location text, note text, event_at timestamptz NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_oil_listings_active ON oil_listings(active,created_at);
+CREATE INDEX IF NOT EXISTS idx_oil_share_interest_user ON oil_share_interest(user_id,created_at);
+CREATE INDEX IF NOT EXISTS idx_shipments_order ON shipments(order_id);

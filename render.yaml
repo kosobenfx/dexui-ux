@@ -22,7 +22,7 @@ services:
         sync: false
       - key: JWT_SECRET
         sync: false
-      - key: ADMIN_BOOTSTRAP_PASSWORD
+      - key: ADMIN_EMAIL
         sync: false
       - key: RESEND_API_KEY
         sync: false
