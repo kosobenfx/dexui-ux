@@ -53,17 +53,6 @@ app.post('/api/auth/reset-password',asyncRoute(async(req,res)=>{
  catch(e){await client.query('rollback');throw e} finally{client.release()}
  res.json({message:'Password reset successful. You can now sign in with your new password.'});
 }));
-const FRONTEND_DIR = path.resolve(__dirname, '..');
-
-app.use(express.static(FRONTEND_DIR, {
-  index: 'index.html'
-}));
-
-app.get('*', (req, res, next) => {
-  res.sendFile(path.join(FRONTEND_DIR, 'index.html'), (err) => {
-    if (err) next(err);
-  });
-});
 
 app.get('/api/me',requireAuth,asyncRoute(async(req,res)=>res.json((await query('select id,name,email,role,status,email_verified from users where id=$1',[req.user.sub])).rows[0])));
 app.get('/api/products',asyncRoute(async(req,res)=>{const {q,category}=req.query;const vals=[];let where='p.active=true';if(category){vals.push(category);where+=' and p.category=$'+vals.length}if(q){vals.push('%'+q+'%');where+=' and (p.name ilike $'+vals.length+' or p.description ilike $'+vals.length+')'}const r=await query(`select p.*,s.business_name seller,coalesce(round(avg(rv.rating),1),0) rating,count(rv.id)::int reviews from products p join sellers s on s.id=p.seller_id left join reviews rv on rv.product_id=p.id where ${where} group by p.id,s.business_name order by p.created_at desc`,vals);res.json(r.rows)}));
@@ -104,3 +93,16 @@ app.get('/api/admin/stats',requireAuth,requireRole('admin'),asyncRoute(async(req
 io.on('connection',socket=>socket.on('join_conversation',id=>socket.join(id)));
 app.use(express.static(__dirname+'/..')); app.get('*',(req,res)=>res.sendFile(__dirname+'/../index.html')); app.use((err,req,res,next)=>{console.error(err);res.status(500).json({error:'Internal server error'})});
 const PORT=Number(process.env.PORT||8080),HOST=process.env.HOST||'0.0.0.0'; server.listen(PORT,HOST,()=>console.log(`Dexillionz API listening on ${HOST}:${PORT}`));
+
+
+const FRONTEND_DIR = path.resolve(__dirname, '..');
+
+app.use(express.static(FRONTEND_DIR, {
+  index: 'index.html'
+}));
+
+app.get('*', (req, res, next) => {
+  res.sendFile(path.join(FRONTEND_DIR, 'index.html'), (err) => {
+    if (err) next(err);
+  });
+});
