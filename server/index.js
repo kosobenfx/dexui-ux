@@ -2317,7 +2317,6 @@ server.listen(
     );
   }
 );
-```
  const raw=crypto.randomBytes(32).toString('hex');
  const tokenHash=crypto.createHash('sha256').update(raw).digest('hex');
  await query('delete from password_reset_tokens where user_id=$1 or expires_at < now()',[user.id]);
@@ -2436,11 +2435,4 @@ app.use((err, req, res, next) => {
   res.status(status).json({
     error: status >= 500 ? 'Internal server error' : (err.message || 'Request failed')
   });
-});
-
-const PORT = Number(process.env.PORT || 8080);
-const HOST = process.env.HOST || '0.0.0.0';
-
-server.listen(PORT, HOST, () => {
-  console.log(Dexillionz API listening on ${HOST}:${PORT});
 });
