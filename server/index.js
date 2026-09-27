@@ -2207,4 +2207,10 @@ app.post(
     const r = await query(
       `insert into messages
         (conversation_id,sender_id,body)
-       values
+       values($1,$2,$3)
+       returning *',
+       [req.params.id,req.user.sub,req.body.body]
+       );
+
+
+
